@@ -397,6 +397,17 @@ export default function Home() {
           Nota: A primeira vez que você clica, pode haver um leve atraso. O
           processamento é todo local (CPU).
         </p>
+
+        {/* Carrega o script principal do Sherpa WASM */}
+        {/* Remove leading slash to respect basePath */}
+        <Script
+          src="sherpa-onnx-wasm-main-tts.js"
+          strategy="beforeInteractive"
+          onLoad={() => {
+            console.log("Script onLoad fired.");
+            // O polling no useEffect vai detectar a carga
+          }}
+        />
       </div>
     </main>
   );
