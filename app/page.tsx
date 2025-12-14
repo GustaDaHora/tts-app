@@ -208,8 +208,8 @@ export default function Home() {
         srcPath: string,
         destPath: string = srcPath
       ) => {
-        // Use relative path to respect basePath (GitHub Pages subdirectory)
-        const response = await fetch(`${srcPath}`);
+        // Explicitly include base path to avoid 404s on GitHub Pages
+        const response = await fetch(`/tts-app/${srcPath}`);
         if (!response.ok)
           throw new Error(`Failed to fetch ${srcPath}: ${response.statusText}`);
         const buffer = await response.arrayBuffer();
@@ -399,9 +399,8 @@ export default function Home() {
         </p>
 
         {/* Carrega o script principal do Sherpa WASM */}
-        {/* Remove leading slash to respect basePath */}
         <Script
-          src="sherpa-onnx-wasm-main-tts.js"
+          src="/tts-app/sherpa-onnx-wasm-main-tts.js"
           strategy="beforeInteractive"
           onLoad={() => {
             console.log("Script onLoad fired.");
