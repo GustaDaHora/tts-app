@@ -97,7 +97,7 @@ export default function Home() {
     // Tamanho aproximado: ~200 bytes (Vamos alocar 512 para segurança e zerar tudo)
     const configSize = 512;
     const configPtr = _malloc(configSize);
-    Module.HEAPU8.fill(0, configPtr, configPtr + configSize); // Zerar memória
+    Module.HEAPU8.fill(0, configPtr, configPtr + configSize); // Zerar memória CRUCIAL para evitar lixo
 
     // Offset map based on c-api.h:
     // VitsConfig at offset 0
