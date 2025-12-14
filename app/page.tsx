@@ -1,65 +1,402 @@
-import Image from "next/image";
+"use client";
+
+import { useState, useEffect, useRef } from "react";
+import Script from "next/script";
+
+// Definição de Tipos para o Módulo WASM da Sherpa (simplificado)
+interface SherpaVitsConfig {
+  model: string;
+  tokens: string;
+  noiseScale?: number;
+  noiseScaleW?: number;
+  lengthScale?: number;
+}
+
+interface SherpaConfig {
+  vits: SherpaVitsConfig;
+  numThreads?: number;
+  debug?: number;
+  provider?: string;
+}
+
+declare global {
+  interface Window {
+    Module: any;
+    SherpaOnnx: any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    initSherpaCallback?: () => any;
+  }
+}
 
 export default function Home() {
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+  const [text, setText] = useState<string>(
+    "Olá! Este é um teste da Sherpa ONNX rodando localmente no seu navegador."
+  );
+  const [status, setStatus] = useState<string>("Aguardando carregamento...");
+  const [isReady, setIsReady] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // Referências para o motor TTS e o Módulo WASM
+  const ttsRef = useRef<any>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+
+  // Use a ref to track if we've already initialized to strictly prevent double-init
+  const initializedRef = useRef(false);
+
+  // --- Wrapper Manual para Sherpa ONNX (Ponte para o C-API) ---
+  const createOfflineTts = (configObj: SherpaConfig) => {
+    const Module = window.Module;
+
+    // Funções auxiliares de memória
+    const _malloc = Module._malloc;
+    const _free = Module._free;
+    const stringToUTF8 = Module.stringToUTF8;
+    const lengthBytesUTF8 = Module.lengthBytesUTF8;
+    const setValue = Module.setValue;
+    const getValue = Module.getValue;
+
+    const allocString = (str: string) => {
+      if (!str) return 0; // NULL
+      const len = lengthBytesUTF8(str) + 1;
+      const ptr = _malloc(len);
+      stringToUTF8(str, ptr, len);
+      return ptr;
+    };
+
+    // 1. Alocar e Preencher a Struct de Configuração (SherpaOnnxOfflineTtsConfig)
+    // Tamanho aproximado: ~200 bytes (Vamos alocar 512 para segurança e zerar tudo)
+    const configSize = 512;
+    const configPtr = _malloc(configSize);
+    Module.HEAPU8.fill(0, configPtr, configPtr + configSize); // Zerar memória
+
+    // Offset map based on c-api.h:
+    // VitsConfig at offset 0
+    // - model: 0
+    // - lexicon: 4
+    // - tokens: 8
+    // - data_dir: 12
+    // - noise_scale: 16 (float)
+    // - noise_scale_w: 20 (float)
+    // - length_scale: 24 (float)
+    // - dict_dir: 28
+
+    // ModelConfig continues
+    // - num_threads: 32 (int)
+    // - debug: 36 (int)
+    // - provider: 40 (string)
+
+    const vits = configObj.vits;
+
+    // Escreve VITS Config
+    setValue(configPtr + 0, allocString(vits.model), "i32");
+    setValue(configPtr + 4, allocString(""), "i32"); // lexicon unused
+    setValue(configPtr + 8, allocString(vits.tokens), "i32");
+    setValue(configPtr + 12, allocString("espeak-ng-data"), "i32"); // data_dir: point to our espeak folder
+    setValue(configPtr + 16, vits.noiseScale || 0.667, "float");
+    setValue(configPtr + 20, vits.noiseScaleW || 0.8, "float");
+    setValue(configPtr + 24, vits.lengthScale || 1.0, "float");
+    setValue(configPtr + 28, allocString(""), "i32"); // dict_dir unused
+
+    // Escreve Model Config (Outer)
+    setValue(configPtr + 32, configObj.numThreads || 1, "i32");
+    setValue(configPtr + 36, configObj.debug || 1, "i32");
+    setValue(configPtr + 40, allocString(configObj.provider || "cpu"), "i32");
+
+    // 2. Chama a função C para criar o TTS
+    console.log("Calling _SherpaOnnxCreateOfflineTts...");
+    const handle = Module._SherpaOnnxCreateOfflineTts(configPtr);
+    console.log("TTS Handle created:", handle);
+
+    // Limpeza da config (Poderiamos limpar as strings alocadas também, mas para simplify deixamos vazar esses poucos bytes na init única)
+    _free(configPtr);
+
+    if (handle === 0) {
+      throw new Error(
+        "Failed to create SherpaOnnx OfflineTts instance (Handle is 0)"
+      );
+    }
+
+    return {
+      handle: handle,
+      generate: (params: { text: string; sid: number; speed: number }) => {
+        const textPtr = allocString(params.text);
+        const start = performance.now();
+
+        // Chama C function: Generate
+        const audioResPtr = Module._SherpaOnnxOfflineTtsGenerate(
+          handle,
+          textPtr,
+          params.sid || 0,
+          params.speed || 1.0
+        );
+
+        _free(textPtr); // Libera string do texto
+
+        if (audioResPtr === 0) {
+          throw new Error("TtsGenerate returned NULL");
+        }
+
+        // Lê resultado da struct SherpaOnnxGeneratedAudio
+        // - samples: 0 (float*)
+        // - n: 4 (int)
+        // - sample_rate: 8 (int)
+        const samplesPtr = getValue(audioResPtr + 0, "i32");
+        const n = getValue(audioResPtr + 4, "i32");
+        const sampleRate = getValue(audioResPtr + 8, "i32");
+
+        console.log(
+          `Generated ${n} samples at ${sampleRate}Hz in ${
+            performance.now() - start
+          }ms`
+        );
+
+        // Copia samples do Heap para JS Float32Array
+        // HEAPF32 é uma view, precisamos calcular o offset em floats (bytes / 4)
+        const samples = new Float32Array(
+          Module.HEAPF32.buffer,
+          samplesPtr,
+          n
+        ).slice(0); // slice faz uma cópia segura
+
+        // Libera o resultado de áudio do C
+        Module._SherpaOnnxDestroyOfflineTtsGeneratedAudio(audioResPtr);
+
+        return {
+          samples: samples,
+          sampleRate: sampleRate,
+        };
+      },
+      free: () => {
+        Module._SherpaOnnxDestroyOfflineTts(handle);
+      },
+    };
+  };
+
+  // Função para inicializar o motor Sherpa
+  const initSherpa = async () => {
+    if (initializedRef.current) return;
+
+    // Check minimal exports availability
+    if (!window.Module || !window.Module._SherpaOnnxCreateOfflineTts) {
+      console.log("initSherpa called but C-API symbols missing. Waiting...");
+      return;
+    }
+
+    initializedRef.current = true; // Mark as started
+
+    // Fallback: Check if FS is globally available
+    const fs = window.Module.FS || (window as any).FS;
+
+    if (!fs) {
+      setStatus("Erro crítico: FS não encontrado.");
+      return;
+    }
+
+    try {
+      setStatus("Baixando modelos para a memória...");
+      const modelName = "model.onnx";
+      const tokensName = "tokens.txt";
+
+      // 2. Função auxiliar para baixar e gravar no FileSystem do WASM
+      const fetchAndWrite = async (
+        srcPath: string,
+        destPath: string = srcPath
+      ) => {
+        const response = await fetch(`/${srcPath}`);
+        if (!response.ok)
+          throw new Error(`Failed to fetch ${srcPath}: ${response.statusText}`);
+        const buffer = await response.arrayBuffer();
+
+        // Ensure parent directory exists in WASM FS
+        const parts = destPath.split("/");
+        let currentPath = "";
+        for (let i = 0; i < parts.length - 1; i++) {
+          currentPath += (currentPath ? "/" : "") + parts[i];
+          if (currentPath && !fs.analyzePath(currentPath).exists) {
+            fs.mkdir(currentPath);
+          }
+        }
+
+        fs.writeFile(destPath, new Uint8Array(buffer));
+      };
+
+      // Baixa os arquivos do modelo
+      const modelPromises = [
+        fetchAndWrite(modelName),
+        fetchAndWrite(tokensName),
+      ];
+
+      // Baixa os arquivos do eSpeak-NG (Necessários para modelos pt-br/piper)
+      const espeakFiles = [
+        "phondata",
+        "phonindex",
+        "phontab",
+        "intonations",
+        "pt_dict",
+      ];
+
+      const espeakPromises = espeakFiles.map((f) =>
+        fetchAndWrite(`espeak-ng-data/${f}`, `espeak-ng-data/${f}`)
+      );
+
+      await Promise.all([...modelPromises, ...espeakPromises]);
+
+      setStatus("Inicializando motor TTS (Native Wrapper)...");
+
+      const config = {
+        vits: {
+          model: modelName,
+          tokens: tokensName,
+          lengthScale: 1.0,
+          noiseScale: 0.667,
+          noiseScaleW: 0.8,
+        },
+        numThreads: 1,
+        debug: 1,
+        provider: "cpu",
+      };
+
+      // Cria instância usando nosso wrapper manual
+      ttsRef.current = createOfflineTts(config);
+
+      setStatus("Pronto! Modelo PT-BR (Dionisio) carregado.");
+      setIsReady(true);
+    } catch (e) {
+      console.error(e);
+      setStatus("Erro ao carregar modelos: " + e);
+      initializedRef.current = false; // Allow retry on error
+    }
+  };
+
+  // Poll for Module readiness
+  useEffect(() => {
+    if (!mounted) return;
+
+    const intervalId = setInterval(() => {
+      if (initializedRef.current) {
+        clearInterval(intervalId);
+        return;
+      }
+
+      // Check for the C function symbol instead of the Class
+      if (window.Module && window.Module._SherpaOnnxCreateOfflineTts) {
+        console.log("Polling success: C-API symbols found. Initializing...");
+        initSherpa();
+        clearInterval(intervalId);
+      } else if (window.Module) {
+        console.log("Polling: Module loaded, waiting for WASM symbols...");
+      }
+    }, 1000);
+
+    return () => clearInterval(intervalId);
+  }, [mounted]);
+
+  const handleSpeak = () => {
+    if (!ttsRef.current || !text) return;
+
+    setIsSpeaking(true);
+
+    // Pequeno delay para a UI atualizar antes do processamento pesado travar a thread
+    setTimeout(() => {
+      try {
+        // Gera o áudio (retorna um objeto com samples e sampleRate)
+        const audioData = ttsRef.current.generate({
+          text: text,
+          sid: 0, // Speaker ID (0 para single speaker)
+          speed: 1.0,
+        });
+
+        playAudio(audioData.samples, audioData.sampleRate);
+      } catch (error) {
+        console.error("Speak error:", error);
+        setIsSpeaking(false);
+      }
+    }, 50);
+  };
+
+  const playAudio = (samples: Float32Array, sampleRate: number) => {
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext ||
+        (window as any).webkitAudioContext)();
+    }
+
+    const ctx = audioContextRef.current;
+    const buffer = ctx.createBuffer(1, samples.length, sampleRate);
+
+    // Fix TypeScript error by ensuring the type matches exactly what copyToChannel expects
+    // Creating a new Float32Array from the existing one usually solves the ArrayBufferLike mismatch
+    buffer.copyToChannel(new Float32Array(samples), 0);
+
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+
+    source.onended = () => setIsSpeaking(false);
+    source.start(0);
+  };
+
+  // Prevent hydration mismatch by only rendering content after mount
+  if (!mounted) {
+    return (
+      <main className="flex min-h-screen flex-col items-center justify-center p-6 bg-gray-950 text-white">
+        <div className="text-gray-400">Carregando interface...</div>
       </main>
-    </div>
+    );
+  }
+
+  return (
+    <main className="flex min-h-screen flex-col items-center justify-center p-6 bg-gray-950 text-white">
+      {/* Simplest script loading strategy */}
+      <Script
+        src="/sherpa-onnx-wasm-main-tts.js"
+        strategy="afterInteractive"
+        onLoad={() => {
+          console.log("Script onLoad fired.");
+        }}
+        onError={(e) => console.error("Script load error", e)}
+      />
+
+      <div className="w-full max-w-2xl bg-gray-800 p-8 rounded-xl shadow-2xl border border-gray-700">
+        <h1 className="text-3xl font-bold mb-2 text-center text-green-400">
+          Sherpa ONNX (WASM)
+        </h1>
+        <p className="text-center text-gray-400 mb-6 text-sm">
+          Status: <span className="font-mono text-yellow-300">{status}</span>
+        </p>
+
+        <div className="mb-6">
+          <textarea
+            className="w-full p-4 h-40 rounded-lg bg-gray-700 border border-gray-600 focus:outline-none focus:ring-2 focus:ring-green-500 text-white resize-none"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+          />
+        </div>
+
+        <button
+          onClick={handleSpeak}
+          disabled={!isReady || isSpeaking}
+          className={`w-full py-4 px-6 rounded-lg font-bold transition-all text-lg ${
+            !isReady
+              ? "bg-gray-600 cursor-not-allowed"
+              : isSpeaking
+              ? "bg-green-700 cursor-wait"
+              : "bg-green-600 hover:bg-green-500 hover:scale-105 shadow-lg shadow-green-500/20"
+          } ${!isReady ? "text-gray-400" : "text-white"}`}
+        >
+          {isSpeaking ? "Gerando e Falando..." : "Gerar Áudio Neural"}
+        </button>
+
+        <p className="mt-4 text-xs text-center text-gray-500">
+          Nota: A primeira vez que você clica, pode haver um leve atraso. O
+          processamento é todo local (CPU).
+        </p>
+      </div>
+    </main>
   );
 }
