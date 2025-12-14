@@ -44,6 +44,19 @@ export default function Home() {
     // Manual Script Injection to avoid Next.js Preload/404 issues on GitHub Pages
     const scriptId = "sherpa-wasm-script";
     if (!document.getElementById(scriptId)) {
+      // Define Module config BEFORE loading script to control file search paths
+      window.Module = {
+        print: (text: string) => console.log("[WASM-STDOUT]", text),
+        printErr: (text: string) => console.error("[WASM-STDERR]", text),
+        locateFile: (path: string, prefix: string) => {
+          console.log(`[WASM-LOCATE] Asking for: ${path} (prefix: ${prefix})`);
+          if (path.endsWith(".data") || path.endsWith(".wasm")) {
+            return `/tts-app/${path}`;
+          }
+          return prefix + path;
+        },
+      };
+
       const script = document.createElement("script");
       script.src = "/tts-app/sherpa-onnx-wasm-main-tts.js";
       script.id = scriptId;
