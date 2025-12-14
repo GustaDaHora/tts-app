@@ -208,7 +208,8 @@ export default function Home() {
         srcPath: string,
         destPath: string = srcPath
       ) => {
-        const response = await fetch(`/${srcPath}`);
+        // Use relative path to respect basePath (GitHub Pages subdirectory)
+        const response = await fetch(`${srcPath}`);
         if (!response.ok)
           throw new Error(`Failed to fetch ${srcPath}: ${response.statusText}`);
         const buffer = await response.arrayBuffer();
