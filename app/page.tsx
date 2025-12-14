@@ -40,6 +40,17 @@ export default function Home() {
 
   useEffect(() => {
     setMounted(true);
+
+    // Manual Script Injection to avoid Next.js Preload/404 issues on GitHub Pages
+    const scriptId = "sherpa-wasm-script";
+    if (!document.getElementById(scriptId)) {
+      const script = document.createElement("script");
+      script.src = "/tts-app/sherpa-onnx-wasm-main-tts.js";
+      script.id = scriptId;
+      script.async = true;
+      document.body.appendChild(script);
+      console.log("Injecting Sherpa script manually...");
+    }
   }, []);
 
   // Referências para o motor TTS e o Módulo WASM
@@ -398,15 +409,7 @@ export default function Home() {
           processamento é todo local (CPU).
         </p>
 
-        {/* Carrega o script principal do Sherpa WASM */}
-        <Script
-          src="/tts-app/sherpa-onnx-wasm-main-tts.js"
-          strategy="beforeInteractive"
-          onLoad={() => {
-            console.log("Script onLoad fired.");
-            // O polling no useEffect vai detectar a carga
-          }}
-        />
+        {/* Script loader handled in useEffect above */}
       </div>
     </main>
   );
