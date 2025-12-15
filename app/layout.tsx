@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -28,6 +29,25 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         {children}
+        <Script id="sherpa-module-init" strategy="beforeInteractive">
+          {`
+            if (typeof window !== 'undefined') {
+              console.log("Injecting Custom Module.locateFile...");
+              window.Module = window.Module || {};
+              window.Module.locateFile = function(path, prefix) {
+                console.log("locateFile called for:", path, "prefix:", prefix);
+                if (path.endsWith(".wasm") || path.endsWith(".data")) {
+                  const newPath = "/tts-app/" + path;
+                  console.log("locateFile returning:", newPath);
+                  return newPath;
+                }
+                return prefix + path;
+              };
+              window.Module.print = function(text) { console.log("[WASM/STDOUT]: " + text); };
+              window.Module.printErr = function(text) { console.error("[WASM/STDERR]: " + text); };
+            }
+          `}
+        </Script>
       </body>
     </html>
   );
