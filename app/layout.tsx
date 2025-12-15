@@ -28,6 +28,7 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
+        <script src="/tts-app/coi-serviceworker.js" async></script>
         {children}
         <Script id="sherpa-module-init" strategy="beforeInteractive">
           {`
