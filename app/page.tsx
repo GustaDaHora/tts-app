@@ -3,26 +3,28 @@
 import { useState, useEffect, useRef } from "react";
 import Script from "next/script";
 
-// Type definitions for the wrapper
-interface OfflineTts {
-  sampleRate: number;
-  numSpeakers: number;
-  generate: (config: { text: string; sid: number; speed: number }) => {
-    samples: Float32Array;
-    sampleRate: number;
-  };
-  free: () => void;
+// Definição de Tipos para o Módulo WASM da Sherpa (simplificado)
+interface SherpaVitsConfig {
+  model: string;
+  tokens: string;
+  noiseScale?: number;
+  noiseScaleW?: number;
+  lengthScale?: number;
 }
 
-interface OfflineTtsFactory {
-  init: (config: any) => OfflineTts | undefined;
+interface SherpaConfig {
+  vits: SherpaVitsConfig;
+  numThreads?: number;
+  debug?: number;
+  provider?: string;
 }
 
 declare global {
   interface Window {
     Module: any;
     SherpaOnnx: any;
-    createOfflineTts: (module: any) => OfflineTtsFactory;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    initSherpaCallback?: () => any;
   }
 }
 
@@ -38,58 +40,161 @@ export default function Home() {
 
   useEffect(() => {
     setMounted(true);
-
-    // Initialize Module with LocateFile to handle paths correctly on GitHub Pages
-    if (!window.Module) {
-      window.Module = {
-        print: (text: string) => console.log("[WASM-STDOUT]", text),
-        printErr: (text: string) => console.error("[WASM-STDERR]", text),
-        locateFile: (path: string, prefix: string) => {
-          console.log(`[WASM-LOCATE] Asking for: ${path} (prefix: ${prefix})`);
-          if (path.endsWith(".data") || path.endsWith(".wasm")) {
-            // Adjust this path if your repo name is different or using custom domain
-            // Ensuring we look in the right place relative to public/
-            return `/tts-app/${path}`;
-          }
-          return prefix + path;
-        },
-      };
-    }
-
-    // Manual script injection to ensure Module is configured FIRST
-    const scriptId = "sherpa-wasm-main-script";
-    if (!document.getElementById(scriptId)) {
-      const script = document.createElement("script");
-      script.src = "/tts-app/sherpa-onnx-wasm-main-tts.js";
-      script.id = scriptId;
-      script.async = true;
-      document.body.appendChild(script);
-      console.log("Injected Sherpa WASM script manually.");
-    }
   }, []);
 
-  // Refs
-  const ttsRef = useRef<OfflineTts | null>(null);
+  // Referências para o motor TTS e o Módulo WASM
+  const ttsRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+
+  // Use a ref to track if we've already initialized to strictly prevent double-init
   const initializedRef = useRef(false);
 
-  // Initialize Sherpa Engine
+  // --- Wrapper Manual para Sherpa ONNX (Ponte para o C-API) ---
+  const createOfflineTts = (configObj: SherpaConfig) => {
+    const Module = window.Module;
+
+    // Funções auxiliares de memória
+    const _malloc = Module._malloc;
+    const _free = Module._free;
+    const stringToUTF8 = Module.stringToUTF8;
+    const lengthBytesUTF8 = Module.lengthBytesUTF8;
+    const setValue = Module.setValue;
+    const getValue = Module.getValue;
+
+    const allocString = (str: string) => {
+      if (!str) return 0; // NULL
+      const len = lengthBytesUTF8(str) + 1;
+      const ptr = _malloc(len);
+      stringToUTF8(str, ptr, len);
+      return ptr;
+    };
+
+    // 1. Alocar e Preencher a Struct de Configuração (SherpaOnnxOfflineTtsConfig)
+    // Tamanho aproximado: ~200 bytes (Vamos alocar 512 para segurança e zerar tudo)
+    const configSize = 512;
+    const configPtr = _malloc(configSize);
+    Module.HEAPU8.fill(0, configPtr, configPtr + configSize); // Zerar memória
+
+    // Offset map based on c-api.h:
+    // VitsConfig at offset 0
+    // - model: 0
+    // - lexicon: 4
+    // - tokens: 8
+    // - data_dir: 12
+    // - noise_scale: 16 (float)
+    // - noise_scale_w: 20 (float)
+    // - length_scale: 24 (float)
+    // - dict_dir: 28
+
+    // ModelConfig continues
+    // - num_threads: 32 (int)
+    // - debug: 36 (int)
+    // - provider: 40 (string)
+
+    const vits = configObj.vits;
+
+    // Escreve VITS Config
+    setValue(configPtr + 0, allocString(vits.model), "i32");
+    setValue(configPtr + 4, allocString(""), "i32"); // lexicon unused
+    setValue(configPtr + 8, allocString(vits.tokens), "i32");
+    setValue(configPtr + 12, allocString("espeak-ng-data"), "i32"); // data_dir: point to our espeak folder
+    setValue(configPtr + 16, vits.noiseScale || 0.667, "float");
+    setValue(configPtr + 20, vits.noiseScaleW || 0.8, "float");
+    setValue(configPtr + 24, vits.lengthScale || 1.0, "float");
+    setValue(configPtr + 28, allocString(""), "i32"); // dict_dir unused
+
+    // Escreve Model Config (Outer)
+    setValue(configPtr + 32, configObj.numThreads || 1, "i32");
+    setValue(configPtr + 36, configObj.debug || 1, "i32");
+    setValue(configPtr + 40, allocString(configObj.provider || "cpu"), "i32");
+
+    // 2. Chama a função C para criar o TTS
+    console.log("Calling _SherpaOnnxCreateOfflineTts...");
+    const handle = Module._SherpaOnnxCreateOfflineTts(configPtr);
+    console.log("TTS Handle created:", handle);
+
+    // Limpeza da config (Poderiamos limpar as strings alocadas também, mas para simplify deixamos vazar esses poucos bytes na init única)
+    _free(configPtr);
+
+    if (handle === 0) {
+      throw new Error(
+        "Failed to create SherpaOnnx OfflineTts instance (Handle is 0)"
+      );
+    }
+
+    return {
+      handle: handle,
+      generate: (params: { text: string; sid: number; speed: number }) => {
+        const textPtr = allocString(params.text);
+        const start = performance.now();
+
+        // Chama C function: Generate
+        const audioResPtr = Module._SherpaOnnxOfflineTtsGenerate(
+          handle,
+          textPtr,
+          params.sid || 0,
+          params.speed || 1.0
+        );
+
+        _free(textPtr); // Libera string do texto
+
+        if (audioResPtr === 0) {
+          throw new Error("TtsGenerate returned NULL");
+        }
+
+        // Lê resultado da struct SherpaOnnxGeneratedAudio
+        // - samples: 0 (float*)
+        // - n: 4 (int)
+        // - sample_rate: 8 (int)
+        const samplesPtr = getValue(audioResPtr + 0, "i32");
+        const n = getValue(audioResPtr + 4, "i32");
+        const sampleRate = getValue(audioResPtr + 8, "i32");
+
+        console.log(
+          `Generated ${n} samples at ${sampleRate}Hz in ${
+            performance.now() - start
+          }ms`
+        );
+
+        // Copia samples do Heap para JS Float32Array
+        // HEAPF32 é uma view, precisamos calcular o offset em floats (bytes / 4)
+        const samples = new Float32Array(
+          Module.HEAPF32.buffer,
+          samplesPtr,
+          n
+        ).slice(0); // slice faz uma cópia segura
+
+        // Libera o resultado de áudio do C
+        Module._SherpaOnnxDestroyOfflineTtsGeneratedAudio(audioResPtr);
+
+        return {
+          samples: samples,
+          sampleRate: sampleRate,
+        };
+      },
+      free: () => {
+        Module._SherpaOnnxDestroyOfflineTts(handle);
+      },
+    };
+  };
+
+  // Função para inicializar o motor Sherpa
   const initSherpa = async () => {
     if (initializedRef.current) return;
 
-    // Wait for both Module and the wrapper function to be available
-    if (!window.Module || !window.createOfflineTts) {
-      console.log("initSherpa called but scripts not ready. Waiting...");
+    // Check minimal exports availability
+    if (!window.Module || !window.Module._SherpaOnnxCreateOfflineTts) {
+      console.log("initSherpa called but C-API symbols missing. Waiting...");
       return;
     }
 
     initializedRef.current = true; // Mark as started
 
-    // Fallback: Check if FS is globally available in Module
-    const fs = window.Module.FS;
+    // Fallback: Check if FS is globally available
+    const fs = window.Module.FS || (window as any).FS;
+
     if (!fs) {
-      setStatus("Aguardando sistema de arquivos WASM...");
-      initializedRef.current = false; // Retry later
+      setStatus("Erro crítico: FS não encontrado.");
       return;
     }
 
@@ -98,18 +203,17 @@ export default function Home() {
       const modelName = "model.onnx";
       const tokensName = "tokens.txt";
 
-      // 1. Helper to fetch and write files to WASM FS
+      // 2. Função auxiliar para baixar e gravar no FileSystem do WASM
       const fetchAndWrite = async (
         srcPath: string,
         destPath: string = srcPath
       ) => {
-        // Explicitly include base path to avoid 404s on GitHub Pages
-        const response = await fetch(`/tts-app/${srcPath}`);
+        const response = await fetch(`/${srcPath}`);
         if (!response.ok)
           throw new Error(`Failed to fetch ${srcPath}: ${response.statusText}`);
         const buffer = await response.arrayBuffer();
 
-        // Ensure directories exist
+        // Ensure parent directory exists in WASM FS
         const parts = destPath.split("/");
         let currentPath = "";
         for (let i = 0; i < parts.length - 1; i++) {
@@ -120,16 +224,15 @@ export default function Home() {
         }
 
         fs.writeFile(destPath, new Uint8Array(buffer));
-        console.log(`Saved ${destPath} to WASM FS`);
       };
 
-      // 2. Download Model Files
+      // Baixa os arquivos do modelo
       const modelPromises = [
         fetchAndWrite(modelName),
         fetchAndWrite(tokensName),
       ];
 
-      // 3. Download eSpeak-NG Data (Required for VITS/Piper models)
+      // Baixa os arquivos do eSpeak-NG (Necessários para modelos pt-br/piper)
       const espeakFiles = [
         "phondata",
         "phonindex",
@@ -137,53 +240,37 @@ export default function Home() {
         "intonations",
         "pt_dict",
       ];
+
       const espeakPromises = espeakFiles.map((f) =>
         fetchAndWrite(`espeak-ng-data/${f}`, `espeak-ng-data/${f}`)
       );
 
       await Promise.all([...modelPromises, ...espeakPromises]);
 
-      setStatus("Inicializando motor TTS...");
+      setStatus("Inicializando motor TTS (Native Wrapper)...");
 
-      // 4. Configure and Create TTS Instance using the Wrapper
-      // The wrapper expects a nested structure matching the C structs
       const config = {
-        offlineTtsConfig: {
-          offlineTtsModelConfig: {
-            offlineTtsVitsModelConfig: {
-              model: modelName,
-              tokens: tokensName,
-              dataDir: "espeak-ng-data",
-              noiseScale: 0.667,
-              noiseScaleW: 0.8,
-              lengthScale: 1.0,
-            },
-            numThreads: 1,
-            debug: 1,
-            provider: "cpu",
-          },
-          maxNumSentences: 1,
-          ruleFsts: "",
-          ruleFars: "",
-          silenceScale: 0.2,
+        vits: {
+          model: modelName,
+          tokens: tokensName,
+          lengthScale: 1.0,
+          noiseScale: 0.667,
+          noiseScaleW: 0.8,
         },
+        numThreads: 1,
+        debug: 1,
+        provider: "cpu",
       };
 
-      const factory = window.createOfflineTts(window.Module);
-      const tts = factory.init(config);
-
-      if (!tts) {
-        throw new Error("Falha ao criar instância TTS (Wrapper retornou null)");
-      }
-
-      ttsRef.current = tts;
+      // Cria instância usando nosso wrapper manual
+      ttsRef.current = createOfflineTts(config);
 
       setStatus("Pronto! Modelo PT-BR (Dionisio) carregado.");
       setIsReady(true);
     } catch (e) {
       console.error(e);
       setStatus("Erro ao carregar modelos: " + e);
-      initializedRef.current = false;
+      initializedRef.current = false; // Allow retry on error
     }
   };
 
@@ -197,17 +284,13 @@ export default function Home() {
         return;
       }
 
-      // Check if WASM runtime is initialized and Wrapper function is present
-      if (
-        window.Module &&
-        // Check for specific Emscripten runtime symbol to ensure it's fully loaded
-        // _SherpaOnnxCreateOfflineTts comes from WASM, createOfflineTts comes from JS wrapper
-        window.Module._SherpaOnnxCreateOfflineTts &&
-        typeof window.createOfflineTts === "function"
-      ) {
-        console.log("Dependencies ready. Initializing...");
+      // Check for the C function symbol instead of the Class
+      if (window.Module && window.Module._SherpaOnnxCreateOfflineTts) {
+        console.log("Polling success: C-API symbols found. Initializing...");
         initSherpa();
         clearInterval(intervalId);
+      } else if (window.Module) {
+        console.log("Polling: Module loaded, waiting for WASM symbols...");
       }
     }, 1000);
 
@@ -219,12 +302,13 @@ export default function Home() {
 
     setIsSpeaking(true);
 
-    // Yield to UI
+    // Pequeno delay para a UI atualizar antes do processamento pesado travar a thread
     setTimeout(() => {
       try {
-        const audioData = ttsRef.current!.generate({
+        // Gera o áudio (retorna um objeto com samples e sampleRate)
+        const audioData = ttsRef.current.generate({
           text: text,
-          sid: 0,
+          sid: 0, // Speaker ID (0 para single speaker)
           speed: 1.0,
         });
 
@@ -245,7 +329,8 @@ export default function Home() {
     const ctx = audioContextRef.current;
     const buffer = ctx.createBuffer(1, samples.length, sampleRate);
 
-    // Make a copy to match Type requirements (Float32Array)
+    // Fix TypeScript error by ensuring the type matches exactly what copyToChannel expects
+    // Creating a new Float32Array from the existing one usually solves the ArrayBufferLike mismatch
     buffer.copyToChannel(new Float32Array(samples), 0);
 
     const source = ctx.createBufferSource();
@@ -256,6 +341,7 @@ export default function Home() {
     source.start(0);
   };
 
+  // Prevent hydration mismatch by only rendering content after mount
   if (!mounted) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center p-6 bg-gray-950 text-white">
@@ -266,11 +352,14 @@ export default function Home() {
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-6 bg-gray-950 text-white">
-      {/* Load Wrapper First */}
+      {/* Simplest script loading strategy */}
       <Script
-        src="/tts-app/sherpa-onnx-tts.js"
-        strategy="beforeInteractive"
-        onLoad={() => console.log("Wrapper Loaded")}
+        src="/sherpa-onnx-wasm-main-tts.js"
+        strategy="afterInteractive"
+        onLoad={() => {
+          console.log("Script onLoad fired.");
+        }}
+        onError={(e) => console.error("Script load error", e)}
       />
 
       <div className="w-full max-w-2xl bg-gray-800 p-8 rounded-xl shadow-2xl border border-gray-700">
