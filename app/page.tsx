@@ -30,8 +30,10 @@ declare global {
 
 export default function Home() {
   const [text, setText] = useState<string>(
-    "Olá! Este é um teste da Sherpa ONNX rodando localmente no seu navegador."
+    "Olá! Este é um teste da Sherpa ONNX rodando localmente no seu navegador. (Versão GitHub Pages)"
   );
+
+  const prefix = "/tts-app";
   const [status, setStatus] = useState<string>("Aguardando carregamento...");
   const [isReady, setIsReady] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -208,7 +210,7 @@ export default function Home() {
         srcPath: string,
         destPath: string = srcPath
       ) => {
-        const response = await fetch(`/${srcPath}`);
+        const response = await fetch(`${prefix}/${srcPath}`);
         if (!response.ok)
           throw new Error(`Failed to fetch ${srcPath}: ${response.statusText}`);
         const buffer = await response.arrayBuffer();
@@ -352,9 +354,30 @@ export default function Home() {
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-6 bg-gray-950 text-white">
+      {/* Module Init for Custom Path Resolution */}
+      <Script id="sherpa-module-init" strategy="beforeInteractive">
+        {`
+          if (typeof window !== 'undefined') {
+            console.log("Injecting Custom Module.locateFile...");
+            window.Module = window.Module || {};
+            window.Module.locateFile = function(path, prefix) {
+              console.log("locateFile called for:", path, "prefix:", prefix);
+              if (path.endsWith(".wasm") || path.endsWith(".data")) {
+                const newPath = "/tts-app/" + path;
+                console.log("locateFile returning:", newPath);
+                return newPath;
+              }
+              return prefix + path;
+            };
+            window.Module.print = function(text) { console.log("[WASM/STDOUT]: " + text); };
+            window.Module.printErr = function(text) { console.error("[WASM/STDERR]: " + text); };
+          }
+        `}
+      </Script>
+
       {/* Simplest script loading strategy */}
       <Script
-        src="/sherpa-onnx-wasm-main-tts.js"
+        src={`${prefix}/sherpa-onnx-wasm-main-tts.js`}
         strategy="afterInteractive"
         onLoad={() => {
           console.log("Script onLoad fired.");
