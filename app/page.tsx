@@ -33,7 +33,8 @@ export default function Home() {
     "Olá! Este é um teste da Sherpa ONNX rodando localmente no seu navegador. (Versão GitHub Pages)"
   );
 
-  const prefix = "/tts-app";
+  // No prefix needed for Vercel/Root deployment
+  const prefix = "./";
   const [status, setStatus] = useState<string>("Aguardando carregamento...");
   const [isReady, setIsReady] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
