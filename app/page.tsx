@@ -21,7 +21,9 @@ interface SherpaConfig {
 
 declare global {
   interface Window {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     Module: any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     SherpaOnnx: any;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     initSherpaCallback?: () => any;
@@ -46,6 +48,7 @@ export default function Home() {
   }, []);
 
   // Referências para o motor TTS e o Módulo WASM
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const ttsRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
 
@@ -161,6 +164,9 @@ export default function Home() {
 
         // Copia samples do Heap para JS Float32Array
         // HEAPF32 é uma view, precisamos calcular o offset em floats (bytes / 4)
+        if (!Module.HEAPF32 || !Module.HEAPF32.buffer) {
+          throw new Error("WASM memory (HEAPF32) not initialized");
+        }
         const samples = new Float32Array(
           Module.HEAPF32.buffer,
           samplesPtr,
@@ -194,6 +200,7 @@ export default function Home() {
     initializedRef.current = true; // Mark as started
 
     // Fallback: Check if FS is globally available
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fs = window.Module.FS || (window as any).FS;
 
     if (!fs) {
@@ -325,6 +332,7 @@ export default function Home() {
 
   const playAudio = (samples: Float32Array, sampleRate: number) => {
     if (!audioContextRef.current) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       audioContextRef.current = new (window.AudioContext ||
         (window as any).webkitAudioContext)();
     }
