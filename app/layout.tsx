@@ -29,6 +29,8 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         {children}
+        {/* COI Service Worker - only activates on non-localhost */}
+        <Script src="/coi-serviceworker.js" strategy="beforeInteractive" />
         <Script id="sherpa-module-init" strategy="beforeInteractive">
           {`
             if (typeof window !== 'undefined') {
