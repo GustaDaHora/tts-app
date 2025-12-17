@@ -32,19 +32,31 @@ export default function RootLayout({
         <Script id="sherpa-module-init" strategy="beforeInteractive">
           {`
             if (typeof window !== 'undefined') {
-              console.log("Injecting Custom Module.locateFile...");
+              console.log("Injecting Custom Module configuration...");
               window.Module = window.Module || {};
+              
+              // Fix file location for both WASM and data files
               window.Module.locateFile = function(path, prefix) {
                 console.log("locateFile called for:", path, "prefix:", prefix);
-                if (path.endsWith(".wasm") || path.endsWith(".data")) {
-                  const newPath = "/" + path;
-                  console.log("locateFile returning:", newPath);
-                  return newPath;
+                // Always serve from root for static export
+                if (path.endsWith(".wasm")) {
+                  return "./sherpa-onnx-wasm-main-tts.wasm";
                 }
+                if (path.endsWith(".data")) {
+                  return "./sherpa-onnx-wasm-main-tts.data";
+                }
+                console.log("locateFile returning default:", prefix + path);
                 return prefix + path;
               };
-              window.Module.print = function(text) { console.log("[WASM/STDOUT]: " + text); };
-              window.Module.printErr = function(text) { console.error("[WASM/STDERR]: " + text); };
+              
+              // Debug logging for WASM output
+              window.Module.print = function(text) { console.log("[WASM]: " + text); };
+              window.Module.printErr = function(text) { console.error("[WASM ERR]: " + text); };
+              
+              // Track module initialization
+              window.Module.onRuntimeInitialized = function() {
+                console.log("WASM Runtime Initialized Successfully!");
+              };
             }
           `}
         </Script>
