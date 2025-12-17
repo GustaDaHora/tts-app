@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import Script from "next/script";
 
 // Definição de Tipos para o Módulo WASM da Sherpa (simplificado)
@@ -41,11 +41,11 @@ export default function Home() {
   const [isReady, setIsReady] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
 
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+  // Hydration check using ref to avoid SSR/client mismatch
+  const [mounted, setMounted] = useState(() => {
+    // Initialize as true only on client-side
+    return typeof window !== "undefined";
+  });
 
   // Referências para o motor TTS e o Módulo WASM
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -187,8 +187,8 @@ export default function Home() {
     };
   };
 
-  // Função para inicializar o motor Sherpa
-  const initSherpa = async () => {
+  // Função para inicializar o motor Sherpa - wrapped in useCallback for useEffect dependency
+  const initSherpa = useCallback(async () => {
     if (initializedRef.current) return;
 
     // Check minimal exports availability
@@ -282,7 +282,7 @@ export default function Home() {
       setStatus("Erro ao carregar modelos: " + e);
       initializedRef.current = false; // Allow retry on error
     }
-  };
+  }, []);
 
   // Poll for Module readiness
   useEffect(() => {
@@ -305,7 +305,7 @@ export default function Home() {
     }, 1000);
 
     return () => clearInterval(intervalId);
-  }, [mounted]);
+  }, [mounted, initSherpa]);
 
   const handleSpeak = () => {
     if (!ttsRef.current || !text) return;
@@ -332,9 +332,11 @@ export default function Home() {
 
   const playAudio = (samples: Float32Array, sampleRate: number) => {
     if (!audioContextRef.current) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      audioContextRef.current = new (window.AudioContext ||
-        (window as any).webkitAudioContext)();
+      const AudioContextClass =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext })
+          .webkitAudioContext;
+      audioContextRef.current = new AudioContextClass();
     }
 
     const ctx = audioContextRef.current;
