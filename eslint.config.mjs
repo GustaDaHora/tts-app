@@ -12,8 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
-    // Ignore WASM files
-    "public/sherpa-onnx-wasm-main-tts.js",
+    "public/**",
+    "emsdk/**",
+    "node_modules/**",
+    "SHERPA/**",
   ]),
 ]);
 
