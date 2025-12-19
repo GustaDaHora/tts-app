@@ -209,60 +209,14 @@ export default function Home() {
     }
 
     try {
-      setStatus("Baixando modelos para a memória...");
-      const modelName = "model.onnx";
-      const tokensName = "tokens.txt";
-
-      // 2. Função auxiliar para baixar e gravar no FileSystem do WASM
-      const fetchAndWrite = async (
-        srcPath: string,
-        destPath: string = srcPath
-      ) => {
-        const response = await fetch(`${prefix}/${srcPath}`);
-        if (!response.ok)
-          throw new Error(`Failed to fetch ${srcPath}: ${response.statusText}`);
-        const buffer = await response.arrayBuffer();
-
-        // Ensure parent directory exists in WASM FS
-        const parts = destPath.split("/");
-        let currentPath = "";
-        for (let i = 0; i < parts.length - 1; i++) {
-          currentPath += (currentPath ? "/" : "") + parts[i];
-          if (currentPath && !fs.analyzePath(currentPath).exists) {
-            fs.mkdir(currentPath);
-          }
-        }
-
-        fs.writeFile(destPath, new Uint8Array(buffer));
-      };
-
-      // Baixa os arquivos do modelo
-      const modelPromises = [
-        fetchAndWrite(modelName),
-        fetchAndWrite(tokensName),
-      ];
-
-      // Baixa os arquivos do eSpeak-NG (Necessários para modelos pt-br/piper)
-      const espeakFiles = [
-        "phondata",
-        "phonindex",
-        "phontab",
-        "intonations",
-        "pt_dict",
-      ];
-
-      const espeakPromises = espeakFiles.map((f) =>
-        fetchAndWrite(`espeak-ng-data/${f}`, `espeak-ng-data/${f}`)
-      );
-
-      await Promise.all([...modelPromises, ...espeakPromises]);
-
+      // As of the custom WASM build, models are embedded in the .data file.
+      // We no longer need to fetch them manually.
       setStatus("Inicializando motor TTS (Native Wrapper)...");
 
       const config = {
         vits: {
-          model: modelName,
-          tokens: tokensName,
+          model: "pt_BR-jeff-medium.onnx",
+          tokens: "tokens.txt",
           lengthScale: 1.0,
           noiseScale: 0.667,
           noiseScaleW: 0.8,
