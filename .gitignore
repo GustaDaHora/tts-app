@@ -40,5 +40,8 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-/SHERPA/
-/emsdk/
+/SHERPA
+/emsdk
+/emsdk_build
+/build_ptbr.sh
+/vits-piper-pt_BR-jeff-medium
