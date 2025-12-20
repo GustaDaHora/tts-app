@@ -157,8 +157,7 @@ export default function Home() {
         const sampleRate = getValue(audioResPtr + 8, "i32");
 
         console.log(
-          `Generated ${n} samples at ${sampleRate}Hz in ${
-            performance.now() - start
+          `Generated ${n} samples at ${sampleRate}Hz in ${performance.now() - start
           }ms`
         );
 
@@ -248,13 +247,13 @@ export default function Home() {
         return;
       }
 
-      // Check for the C function symbol instead of the Class
-      if (window.Module && window.Module._SherpaOnnxCreateOfflineTts) {
-        console.log("Polling success: C-API symbols found. Initializing...");
+      // Check for the ready flag set in layout.tsx
+      if (window.Module && window.Module.isReady) {
+        console.log("Polling success: WASM Runtime is ready. Initializing...");
         initSherpa();
         clearInterval(intervalId);
       } else if (window.Module) {
-        console.log("Polling: Module loaded, waiting for WASM symbols...");
+        console.log("Polling: Module loaded, waiting for Runtime Initialization...");
       }
     }, 1000);
 
@@ -350,13 +349,12 @@ export default function Home() {
         <button
           onClick={handleSpeak}
           disabled={!isReady || isSpeaking}
-          className={`w-full py-4 px-6 rounded-lg font-bold transition-all text-lg ${
-            !isReady
+          className={`w-full py-4 px-6 rounded-lg font-bold transition-all text-lg ${!isReady
               ? "bg-gray-600 cursor-not-allowed"
               : isSpeaking
-              ? "bg-green-700 cursor-wait"
-              : "bg-green-600 hover:bg-green-500 hover:scale-105 shadow-lg shadow-green-500/20"
-          } ${!isReady ? "text-gray-400" : "text-white"}`}
+                ? "bg-green-700 cursor-wait"
+                : "bg-green-600 hover:bg-green-500 hover:scale-105 shadow-lg shadow-green-500/20"
+            } ${!isReady ? "text-gray-400" : "text-white"}`}
         >
           {isSpeaking ? "Gerando e Falando..." : "Gerar Áudio Neural"}
         </button>
