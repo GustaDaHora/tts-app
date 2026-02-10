@@ -131,82 +131,85 @@ export function useSherpaTTS() {
   }, []);
 
   const init = useCallback(() => {
-    if (initializedRef.current) return;
-    
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const win = window as any;
+    // Polling for Module and _malloc
+    const checkInterval = setInterval(() => {
+        if (initializedRef.current) {
+            clearInterval(checkInterval);
+            return;
+        }
 
-    if (!win.Module) {
-        return;
-    }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const win = window as any;
+        if (!win.Module || !win.Module._SherpaOnnxCreateOfflineTts || typeof win.Module._malloc !== 'function') {
+            console.log("Waiting for Sherpa ONNX WASM to be ready...");
+            return;
+        }
 
-    console.log("Checking Module status...");
-    if (win.Module.FS) {
-         try {
-             console.log("FS Root files:", win.Module.FS.readdir("/"));
-             console.log("FS espeak-ng-data:", win.Module.FS.readdir("/espeak-ng-data"));
-         } catch(e) {
-             console.log("FS check error:", e);
-         }
-    } else {
-        console.log("Module.FS not available yet");
-    }
+        clearInterval(checkInterval);
+        console.log("All symbols ready. Initializing...");
 
-    if (!win.Module._SherpaOnnxCreateOfflineTts) {
-       console.log("C-API symbols (SherpaOnnxCreateOfflineTts) missing.");
-       return;
-    }
-
-    console.log("All symbols ready. Initializing...");
-
-    initializedRef.current = true;
-    
-    try {
-        setStatus("Inicializando motor TTS...");
+        initializedRef.current = true;
         
-        // Correct filename from WASM data package analysis
-        const modelPath = "/pt_BR-jeff-medium.onnx";
-        const tokensPath = "/tokens.txt";
-
-        // Verify files exist in MEMFS before attempting initialization
-        if (win.Module.FS) {
-            const modelExists = win.Module.FS.analyzePath(modelPath).exists;
-            const tokensExists = win.Module.FS.analyzePath(tokensPath).exists;
-            console.log(`FS Check: Model exists? ${modelExists}, Tokens exist? ${tokensExists}`);
+        try {
+            setStatus("Inicializando motor TTS...");
             
-            if (!modelExists) {
-                throw new Error(`Model file not found in WASM FS: ${modelPath}`);
+            // Correct filename from WASM data package analysis
+            const modelPath = "/pt_BR-jeff-medium.onnx";
+            const tokensPath = "/tokens.txt";
+    
+            // Verify files exist in MEMFS before attempting initialization
+            if (win.Module.FS) {
+                let modelExists = false;
+                try {
+                     modelExists = win.Module.FS.analyzePath(modelPath).exists;
+                } catch (e) { console.error(e); }
+    
+                if (!modelExists) {
+                    // Fallback check for relative path (just in case)
+                    try {
+                        if (win.Module.FS.analyzePath("pt_BR-jeff-medium.onnx").exists) {
+                             // It exists as relative, unlikely but possible if CWD changed
+                             console.log("Found model at relative path");
+                        }
+                    } catch(e) {}
+                    
+                    // If still not found, we might be too early? But we waited for symbols.
+                    // Let's not throw immediately but log heavily
+                    console.error(`Model file not found in WASM FS: ${modelPath}.`);
+                }
             }
+            
+            const config: SherpaConfig = {
+                vits: {
+                    model: modelPath, 
+                    tokens: tokensPath,
+                    lengthScale: 1.0,
+                    noiseScale: 0.667,
+                    noiseScaleW: 0.8,
+                },
+                numThreads: 1,
+                debug: 1,
+                provider: "cpu"
+            };
+            
+            ttsRef.current = createOfflineTts(config);
+            
+             if ((ttsRef.current as any) === 0) {
+                 throw new Error("SherpaOnnx creation returned 0 handle (Initialization failed).");
+            }
+    
+            setStatus("Pronto! Modelo carregado.");
+            setIsReady(true);
+        } catch (e) {
+            console.error(e);
+            const err = e as Error;
+            setStatus("Erro: " + err.message);
+            initializedRef.current = false; // Allow retry
         }
 
-        const config: SherpaConfig = {
-            vits: {
-                model: modelPath, 
-                tokens: tokensPath,
-                lengthScale: 1.0,
-                noiseScale: 0.667,
-                noiseScaleW: 0.8,
-            },
-            numThreads: 1,
-            debug: 1,
-            provider: "cpu"
-        };
-        
-        ttsRef.current = createOfflineTts(config);
-        
-        // Additional check for the handle
-        if ((ttsRef.current as any) === 0) {
-             throw new Error("SherpaOnnx creation returned 0 handle (Initialization failed).");
-        }
+    }, 500); // Check every 500ms
 
-        setStatus("Pronto! Modelo carregado.");
-        setIsReady(true);
-    } catch (e) {
-        console.error(e);
-        const err = e as Error;
-        setStatus("Erro: " + err.message);
-        initializedRef.current = false; // Allow retry
-    }
+    return () => clearInterval(checkInterval);
 
   }, [createOfflineTts]);
 
