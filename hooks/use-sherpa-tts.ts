@@ -1,8 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { splitTextIntoChunks } from "../lib/text-processing";
 
-// Interfaces mirroring the C-API config
-export interface SherpaVitsConfig {
+interface SherpaVitsConfig {
   model: string;
   tokens: string;
   noiseScale?: number;
@@ -10,54 +8,32 @@ export interface SherpaVitsConfig {
   lengthScale?: number;
 }
 
-export interface SherpaConfig {
+interface SherpaConfig {
   vits: SherpaVitsConfig;
   numThreads?: number;
   debug?: number;
   provider?: string;
 }
 
-// Global window extension
-declare global {
-  interface Window {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    Module: any;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    SherpaOnnx: any;
-  }
-}
-
-interface AudioChunk {
-  samples: Float32Array;
-  sampleRate: number;
+export interface TTSGenerator {
+  handle: number;
+  generate: (params: { text: string; sid: number; speed: number }) => {
+    samples: Float32Array;
+    sampleRate: number;
+  };
+  free: () => void;
 }
 
 export function useSherpaTTS() {
   const [status, setStatus] = useState<string>("Aguardando carregamento...");
   const [isReady, setIsReady] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const [progress, setProgress] = useState<string>("");
-
-  const ttsRef = useRef<any>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
+  const ttsRef = useRef<TTSGenerator | null>(null);
   const initializedRef = useRef(false);
 
-  // Queue State
-  const textQueueRef = useRef<string[]>([]);
-  const audioQueueRef = useRef<AudioChunk[]>([]);
-  const isGeneratingRef = useRef(false);
-  const isPlayingRef = useRef(false);
-  
-  // To stop playback
-  const sourceRef = useRef<AudioBufferSourceNode | null>(null);
-  const shouldStopRef = useRef(false);
-
-  // --- Wrapper Manual for Sherpa ONNX ---
-  const createOfflineTts = (configObj: SherpaConfig) => {
-    const Module = window.Module;
-    if (!Module || !Module._malloc) {
-        throw new Error("Module not initialized or _malloc missing");
-    }
+  // Define createOfflineTts first to be used in init
+  const createOfflineTts = useCallback((configObj: SherpaConfig): TTSGenerator => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const Module = (window as any).Module;
 
     const _malloc = Module._malloc;
     const _free = Module._free;
@@ -80,6 +56,7 @@ export function useSherpaTTS() {
 
     const vits = configObj.vits;
 
+    // Config struct mapping based on c-api.h
     setValue(configPtr + 0, allocString(vits.model), "i32");
     setValue(configPtr + 4, allocString(""), "i32");
     setValue(configPtr + 8, allocString(vits.tokens), "i32");
@@ -93,11 +70,16 @@ export function useSherpaTTS() {
     setValue(configPtr + 36, configObj.debug || 1, "i32");
     setValue(configPtr + 40, allocString(configObj.provider || "cpu"), "i32");
 
+    console.log("Calling _SherpaOnnxCreateOfflineTts...");
     const handle = Module._SherpaOnnxCreateOfflineTts(configPtr);
+    console.log("TTS Handle created:", handle);
+
     _free(configPtr);
 
     if (handle === 0) {
-      throw new Error("Failed to create SherpaOnnx OfflineTts instance");
+      throw new Error(
+        "Failed to create SherpaOnnx OfflineTts instance (Handle is 0). Check model filename and paths."
+      );
     }
 
     return {
@@ -123,14 +105,13 @@ export function useSherpaTTS() {
         const sampleRate = getValue(audioResPtr + 8, "i32");
 
         if (!Module.HEAPF32 || !Module.HEAPF32.buffer) {
-           throw new Error("WASM memory (HEAPF32) not initialized");
+          throw new Error("WASM memory (HEAPF32) not initialized");
         }
-
         const samples = new Float32Array(
           Module.HEAPF32.buffer,
           samplesPtr,
           n
-        ).slice(0);
+        ).slice(0); // Safe copy
 
         Module._SherpaOnnxDestroyOfflineTtsGeneratedAudio(audioResPtr);
 
@@ -143,208 +124,67 @@ export function useSherpaTTS() {
         Module._SherpaOnnxDestroyOfflineTts(handle);
       },
     };
-  };
+  }, []);
 
-  const initSherpa = useCallback(async () => {
+  const init = useCallback(() => {
     if (initializedRef.current) return;
-
-    // Strict check for required C-API symbols
-    if (!window.Module || !window.Module._SherpaOnnxCreateOfflineTts || !window.Module._malloc) {
-      return;
-    }
     
-    // Double check FS
-    const fs = window.Module.FS || (window as any).FS;
-    if (!fs) {
-       console.log("FS not ready yet");
-       return; 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const win = window as any;
+
+    if (!win.Module || !win.Module._SherpaOnnxCreateOfflineTts) {
+       // Symbols not yet ready
+       return;
     }
 
     initializedRef.current = true;
-
+    
     try {
-      setStatus("Inicializando motor TTS...");
-
-      const config = {
-        vits: {
-          model: "pt_BR-jeff-medium.onnx",
-          tokens: "tokens.txt",
-          lengthScale: 1.0,
-          noiseScale: 0.667,
-          noiseScaleW: 0.8,
-        },
-        numThreads: 1,
-        debug: 1,
-        provider: "cpu",
-      };
-
-      ttsRef.current = createOfflineTts(config);
-
-      setStatus("Pronto! Modelo PT-BR carregado.");
-      setIsReady(true);
+        setStatus("Inicializando motor TTS...");
+        
+        // Use generic filenames as they are in public/ folder
+        const config: SherpaConfig = {
+            vits: {
+                model: "model.onnx", // CHANGED from pt_BR-jeff-medium.onnx
+                tokens: "tokens.txt",
+                lengthScale: 1.0,
+                noiseScale: 0.667,
+                noiseScaleW: 0.8,
+            },
+            numThreads: 1,
+            debug: 1,
+            provider: "cpu"
+        };
+        
+        ttsRef.current = createOfflineTts(config);
+        setStatus("Pronto! Modelo carregado.");
+        setIsReady(true);
     } catch (e) {
-      console.error(e);
-      setStatus("Erro ao carregar modelos: " + e);
-      initializedRef.current = false;
+        console.error(e);
+        setStatus("Erro: " + e);
+        initializedRef.current = false; // Retry?
     }
-  }, []);
 
-  // Poll for Module
+  }, [createOfflineTts]);
+
+  // Polling effect
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    const intervalId = setInterval(() => {
-      if (initializedRef.current) {
-        clearInterval(intervalId);
-        return;
-      }
-
-      // We wait until both the Module exists AND the specific C function we need is exported
-      // This ensures WASM is compiled and Runtime initialized
-      if (window.Module && window.Module._SherpaOnnxCreateOfflineTts && window.Module._malloc) {
-        initSherpa();
-        clearInterval(intervalId);
-      }
+    const interval = setInterval(() => {
+        if (initializedRef.current) {
+            clearInterval(interval);
+            return;
+        }
+        init();
     }, 500);
 
-    return () => clearInterval(intervalId);
-  }, [initSherpa]);
-
-
-  // --- Playback Logic ---
-
-  const playNextInQueue = async () => {
-    if (audioQueueRef.current.length === 0) {
-      isPlayingRef.current = false;
-      // If generation is also done, we are truly done
-      if (!isGeneratingRef.current) {
-         setIsSpeaking(false);
-         setProgress("");
-      }
-      return;
-    }
-
-    isPlayingRef.current = true;
-    const chunk = audioQueueRef.current.shift();
-    if (!chunk) return;
-
-    if (!audioContextRef.current) {
-      const AudioContextClass =
-        window.AudioContext ||
-        (window as any).webkitAudioContext;
-      audioContextRef.current = new AudioContextClass();
-    }
-
-    const ctx = audioContextRef.current;
-    
-    // Ensure context is running (sometimes needed for browsers)
-    if (ctx.state === 'suspended') {
-      await ctx.resume();
-    }
-
-    const buffer = ctx.createBuffer(1, chunk.samples.length, chunk.sampleRate);
-    buffer.copyToChannel(new Float32Array(chunk.samples), 0);
-
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.connect(ctx.destination);
-    sourceRef.current = source;
-
-    source.onended = () => {
-        if (!shouldStopRef.current) {
-           playNextInQueue();
-        }
-    };
-
-    source.start(0);
-  };
-
-  const processTextQueue = async (totalChunks: number) => {
-    if (shouldStopRef.current) {
-        isGeneratingRef.current = false;
-        return;
-    }
-
-    if (textQueueRef.current.length === 0) {
-        isGeneratingRef.current = false;
-        return;
-    }
-
-    isGeneratingRef.current = true;
-    const textChunk = textQueueRef.current.shift();
-    const currentChunkIndex = totalChunks - textQueueRef.current.length; // 1-based index roughly
-    
-    setProgress(`Gerando parte ${currentChunkIndex}/${totalChunks}...`);
-
-    if (textChunk && ttsRef.current) {
-        try {
-            // Yield to UI thread implies requestAnimationFrame or setTimeout
-             await new Promise(resolve => setTimeout(resolve, 0));
-
-             const audioData = ttsRef.current.generate({
-                text: textChunk,
-                sid: 0,
-                speed: 1.0,
-            });
-            
-            audioQueueRef.current.push({
-                samples: audioData.samples,
-                sampleRate: audioData.sampleRate,
-            });
-
-            // If not playing, start playing immediately
-            if (!isPlayingRef.current) {
-                playNextInQueue();
-            }
-
-            processTextQueue(totalChunks);
-
-        } catch(e) {
-            console.error("Generation error", e);
-            isGeneratingRef.current = false;
-        }
-    }
-  };
-
-  const speak = (text: string) => {
-    if (!ttsRef.current || !text) return;
-
-    // Reset state
-    cancel();
-    shouldStopRef.current = false;
-    setIsSpeaking(true);
-    
-    const chunks = splitTextIntoChunks(text, 200); // chunk size ~200 chars
-    textQueueRef.current = [...chunks];
-    const totalChunks = chunks.length;
-
-    processTextQueue(totalChunks);
-  };
-
-  const cancel = () => {
-    shouldStopRef.current = true;
-    setIsSpeaking(false);
-    setProgress("");
-    
-    // Stop audio
-    if (sourceRef.current) {
-        try { sourceRef.current.stop(); } catch(e) {}
-        sourceRef.current = null;
-    }
-    
-    // Clear queues
-    textQueueRef.current = [];
-    audioQueueRef.current = [];
-    isGeneratingRef.current = false;
-    isPlayingRef.current = false;
-  };
+    return () => clearInterval(interval);
+  }, [init]);
 
   return {
+    ttsRef: ttsRef,
     status,
-    isReady,
-    isSpeaking,
-    progress,
-    speak,
-    cancel,
+    isReady
   };
 }
