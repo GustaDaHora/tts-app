@@ -35,20 +35,17 @@ export default function RootLayout({
               console.log("Injecting Custom Module configuration...");
               window.Module = window.Module || {};
               
-              // Handle locateFile to ensure correct paths in Vercel/GitHub Pages
+              // Fix file location for both WASM and data files
               window.Module.locateFile = function(path, prefix) {
                 console.log("locateFile called for:", path, "prefix:", prefix);
-                
-                // If prefix is empty or just "/", we might want to be explicit
-                // But generally, for files in public/, relative paths "./" or simple filenames work if base is root
-                
+                // Always serve from root for static export
                 if (path.endsWith(".wasm")) {
-                  return "sherpa-onnx-wasm-main-tts.wasm"; 
+                  return "./sherpa-onnx-wasm-main-tts.wasm";
                 }
                 if (path.endsWith(".data")) {
-                  return "sherpa-onnx-wasm-main-tts.data";
+                  return "./sherpa-onnx-wasm-main-tts.data";
                 }
-                
+                console.log("locateFile returning default:", prefix + path);
                 return prefix + path;
               };
               
