@@ -84,10 +84,9 @@ export default function Home() {
         const chunk = chunks[i];
         setCurrentChunkIndex(i + 1);
 
-        // Generate audio for this chunk
-        // This is a blocking operation on the main thread (WASM), but since chunks are smaller, it shouldn't freeze UI for too long.
-        // We can wrap in another setTimeout to yield to main thread if needed
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        // Yield to main thread to prevent UI freezing
+        // Increasing delay slightly to ensure UI updates render
+        await new Promise((resolve) => setTimeout(resolve, 20));
 
         const audioData = ttsRef.current.generate({
           text: chunk,
@@ -111,8 +110,8 @@ export default function Home() {
   };
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center p-6 bg-gray-950 text-white">
-      {/* Simplest script loading strategy */}
+    <main className="flex min-h-screen flex-col items-center justify-center p-6 bg-gradient-to-br from-gray-900 to-black text-white selection:bg-green-500 selection:text-black">
+      {/* Script loading strategy */}
       <Script
         src={`${prefix}/sherpa-onnx-wasm-main-tts.js`}
         strategy="afterInteractive"
@@ -120,45 +119,86 @@ export default function Home() {
         onError={(e) => console.error("Script load error", e)}
       />
 
-      <div className="w-full max-w-2xl bg-gray-800 p-8 rounded-xl shadow-2xl border border-gray-700">
-        <h1 className="text-3xl font-bold mb-2 text-center text-green-400">
-          Sherpa ONNX (WASM)
-        </h1>
-        <p className="text-center text-gray-400 mb-6 text-sm">
-          Status: <span className="font-mono text-yellow-300">{status}</span>
+      <div className="w-full max-w-2xl bg-white/5 backdrop-blur-lg border border-white/10 p-8 rounded-2xl shadow-2xl ring-1 ring-white/20">
+        <div className="flex items-center justify-center mb-6">
+          <div
+            className={`w-3 h-3 rounded-full mr-2 ${status.startsWith("Pronto") ? "bg-green-500 animate-pulse" : "bg-yellow-500 animate-bounce"}`}
+          ></div>
+          <h1 className="text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-green-400 to-blue-500">
+            Sherpa ONNX TTS
+          </h1>
+        </div>
+
+        <p className="text-center text-gray-400 mb-8 text-sm font-medium tracking-wide">
+          STATUS:{" "}
+          <span
+            className={`${status.startsWith("Pronto") ? "text-green-400" : "text-yellow-400"}`}
+          >
+            {status.toUpperCase()}
+          </span>
         </p>
 
-        <div className="mb-6">
+        <div className="relative mb-8 group">
+          <div className="absolute -inset-0.5 bg-gradient-to-r from-green-400 to-blue-600 rounded-lg blur opacity-30 group-hover:opacity-100 transition duration-1000 group-hover:duration-200"></div>
           <textarea
-            className="w-full p-4 h-40 rounded-lg bg-gray-700 border border-gray-600 focus:outline-none focus:ring-2 focus:ring-green-500 text-white resize-none"
+            className="relative w-full p-6 h-48 rounded-lg bg-gray-900 border border-gray-700/50 focus:outline-none focus:ring-2 focus:ring-green-500/50 text-gray-100 resize-none font-light leading-relaxed placeholder-gray-600 shadow-inner"
             value={text}
             onChange={(e) => setText(e.target.value)}
+            placeholder="Digite seu texto aqui..."
           />
         </div>
+
+        {/* Progress Bar */}
+        {totalChunks > 0 && isSpeaking && (
+          <div className="w-full bg-gray-700 rounded-full h-2.5 mb-6 overflow-hidden">
+            <div
+              className="bg-gradient-to-r from-green-500 to-blue-500 h-2.5 rounded-full transition-all duration-500 ease-out"
+              style={{ width: `${(currentChunkIndex / totalChunks) * 100}%` }}
+            ></div>
+          </div>
+        )}
 
         <button
           onClick={handleSpeak}
           disabled={!isReady}
-          className={`w-full py-4 px-6 rounded-lg font-bold transition-all text-lg ${
+          className={`w-full py-4 px-6 rounded-xl font-bold uppercase tracking-wider transition-all transform duration-200 flex items-center justify-center space-x-2 ${
             !isReady
-              ? "bg-gray-600 cursor-not-allowed"
+              ? "bg-gray-800 text-gray-500 cursor-not-allowed border border-gray-700"
               : isSpeaking
-                ? "bg-red-600 hover:bg-red-500 hover:scale-105 shadow-lg shadow-red-500/20"
-                : "bg-green-600 hover:bg-green-500 hover:scale-105 shadow-lg shadow-green-500/20"
-          } ${!isReady ? "text-gray-400" : "text-white"}`}
+                ? "bg-red-500/10 border border-red-500/50 text-red-500 hover:bg-red-500 hover:text-white hover:scale-[1.02]"
+                : "bg-green-500 hover:bg-green-400 text-black hover:scale-[1.02] shadow-[0_0_20px_rgba(34,197,94,0.3)]"
+          }`}
         >
-          {isSpeaking ? (
-            <span>
-              Parar / Cancelar ({currentChunkIndex}/{totalChunks})
-            </span>
+          {!isReady ? (
+            <span>Carregando Modelo...</span>
+          ) : isSpeaking ? (
+            <>
+              <span className="w-2 h-2 bg-red-500 rounded-full animate-ping mr-2"></span>
+              <span>
+                Parar / Cancelar ({currentChunkIndex}/{totalChunks})
+              </span>
+            </>
           ) : (
-            "Gerar Áudio (Streaming)"
+            <>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-5 w-5 mr-2"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z"
+                  clipRule="evenodd"
+                />
+              </svg>
+              <span>Gerar Áudio</span>
+            </>
           )}
         </button>
 
-        <p className="mt-4 text-xs text-center text-gray-500">
-          Nota: O texto é dividido em segmentos para reprodução rápida. O áudio
-          continua tocando enquanto o próximo trecho é gerado.
+        <p className="mt-6 text-xs text-center text-gray-500 font-mono">
+          Powered by Next.js 16 + Sherpa ONNX (WASM)
         </p>
       </div>
     </main>
