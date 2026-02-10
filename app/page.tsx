@@ -1,46 +1,27 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect } from "react";
 import Script from "next/script";
-
-// Definição de Tipos para o Módulo WASM da Sherpa (simplificado)
-interface SherpaVitsConfig {
-  model: string;
-  tokens: string;
-  noiseScale?: number;
-  noiseScaleW?: number;
-  lengthScale?: number;
-}
-
-interface SherpaConfig {
-  vits: SherpaVitsConfig;
-  numThreads?: number;
-  debug?: number;
-  provider?: string;
-}
-
-declare global {
-  interface Window {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    Module: any;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    SherpaOnnx: any;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    initSherpaCallback?: () => any;
-  }
-}
+import { useSherpaTTS } from "../hooks/use-sherpa-tts";
 
 export default function Home() {
   const [text, setText] = useState<string>(
-    "Olá! Este é um teste da Sherpa ONNX rodando localmente no seu navegador. (Versão GitHub Pages)"
+    "Olá! Este é um teste da Sherpa ONNX rodando localmente no seu navegador. Agora com suporte a textos longos e segmentação automática.",
   );
 
   // No prefix needed for Vercel/Root deployment
   const prefix = "./";
-  const [status, setStatus] = useState<string>("Aguardando carregamento...");
-  const [isReady, setIsReady] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
 
+<<<<<<< HEAD
+  // Hydration check
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const { status, isReady, isSpeaking, progress, speak, cancel } =
+    useSherpaTTS();
+=======
   // Hydration check using ref to avoid SSR/client mismatch
   const [mounted, setMounted] = useState(() => {
     // Initialize as true only on client-side
@@ -157,8 +138,7 @@ export default function Home() {
         const sampleRate = getValue(audioResPtr + 8, "i32");
 
         console.log(
-          `Generated ${n} samples at ${sampleRate}Hz in ${
-            performance.now() - start
+          `Generated ${n} samples at ${sampleRate}Hz in ${performance.now() - start
           }ms`
         );
 
@@ -248,67 +228,29 @@ export default function Home() {
         return;
       }
 
-      // Check for the C function symbol instead of the Class
-      if (window.Module && window.Module._SherpaOnnxCreateOfflineTts) {
-        console.log("Polling success: C-API symbols found. Initializing...");
+      // Check for the ready flag set in layout.tsx
+      if (window.Module && window.Module.isReady) {
+        console.log("Polling success: WASM Runtime is ready. Initializing...");
         initSherpa();
         clearInterval(intervalId);
       } else if (window.Module) {
-        console.log("Polling: Module loaded, waiting for WASM symbols...");
+        console.log("Polling: Module loaded, waiting for Runtime Initialization...");
       }
     }, 1000);
 
     return () => clearInterval(intervalId);
   }, [mounted, initSherpa]);
+>>>>>>> cc1b3022791d9d9799db5b474f2c694579f27b74
 
   const handleSpeak = () => {
-    if (!ttsRef.current || !text) return;
-
-    setIsSpeaking(true);
-
-    // Pequeno delay para a UI atualizar antes do processamento pesado travar a thread
-    setTimeout(() => {
-      try {
-        // Gera o áudio (retorna um objeto com samples e sampleRate)
-        const audioData = ttsRef.current.generate({
-          text: text,
-          sid: 0, // Speaker ID (0 para single speaker)
-          speed: 1.0,
-        });
-
-        playAudio(audioData.samples, audioData.sampleRate);
-      } catch (error) {
-        console.error("Speak error:", error);
-        setIsSpeaking(false);
-      }
-    }, 50);
+    speak(text);
   };
 
-  const playAudio = (samples: Float32Array, sampleRate: number) => {
-    if (!audioContextRef.current) {
-      const AudioContextClass =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext })
-          .webkitAudioContext;
-      audioContextRef.current = new AudioContextClass();
-    }
-
-    const ctx = audioContextRef.current;
-    const buffer = ctx.createBuffer(1, samples.length, sampleRate);
-
-    // Fix TypeScript error by ensuring the type matches exactly what copyToChannel expects
-    // Creating a new Float32Array from the existing one usually solves the ArrayBufferLike mismatch
-    buffer.copyToChannel(new Float32Array(samples), 0);
-
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.connect(ctx.destination);
-
-    source.onended = () => setIsSpeaking(false);
-    source.start(0);
+  const handleStop = () => {
+    cancel();
   };
 
-  // Prevent hydration mismatch by only rendering content after mount
+  // Prevent hydration mismatch
   if (!mounted) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center p-6 bg-gray-950 text-white">
@@ -319,9 +261,7 @@ export default function Home() {
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-6 bg-gray-950 text-white">
-      {/* Module Init moved to layout.tsx */}
-
-      {/* Simplest script loading strategy */}
+      {/* Script loading strategy */}
       <Script
         src={`${prefix}/sherpa-onnx-wasm-main-tts.js`}
         strategy="afterInteractive"
@@ -347,23 +287,53 @@ export default function Home() {
           />
         </div>
 
+<<<<<<< HEAD
+        <div className="flex gap-4">
+          <button
+            onClick={handleSpeak}
+            disabled={!isReady || (isSpeaking && !progress && progress !== "")}
+            className={`flex-1 py-4 px-6 rounded-lg font-bold transition-all text-lg ${
+              !isReady
+                ? "bg-gray-600 cursor-not-allowed"
+                : isSpeaking && !progress // processing but no progress text? usually won't happen
+                  ? "bg-green-700 cursor-wait"
+                  : "bg-green-600 hover:bg-green-500 hover:scale-105 shadow-lg shadow-green-500/20"
+            } ${!isReady ? "text-gray-400" : "text-white"}`}
+          >
+            {isSpeaking
+              ? progress
+                ? progress
+                : "Processando..."
+              : "Gerar Áudio Neural"}
+          </button>
+
+          {isSpeaking && (
+            <button
+              onClick={handleStop}
+              className="py-4 px-6 rounded-lg font-bold transition-all text-lg bg-red-600 hover:bg-red-500 text-white shadow-lg shadow-red-500/20"
+            >
+              Parar
+            </button>
+          )}
+        </div>
+=======
         <button
           onClick={handleSpeak}
           disabled={!isReady || isSpeaking}
-          className={`w-full py-4 px-6 rounded-lg font-bold transition-all text-lg ${
-            !isReady
+          className={`w-full py-4 px-6 rounded-lg font-bold transition-all text-lg ${!isReady
               ? "bg-gray-600 cursor-not-allowed"
               : isSpeaking
-              ? "bg-green-700 cursor-wait"
-              : "bg-green-600 hover:bg-green-500 hover:scale-105 shadow-lg shadow-green-500/20"
-          } ${!isReady ? "text-gray-400" : "text-white"}`}
+                ? "bg-green-700 cursor-wait"
+                : "bg-green-600 hover:bg-green-500 hover:scale-105 shadow-lg shadow-green-500/20"
+            } ${!isReady ? "text-gray-400" : "text-white"}`}
         >
           {isSpeaking ? "Gerando e Falando..." : "Gerar Áudio Neural"}
         </button>
+>>>>>>> cc1b3022791d9d9799db5b474f2c694579f27b74
 
         <p className="mt-4 text-xs text-center text-gray-500">
-          Nota: A primeira vez que você clica, pode haver um leve atraso. O
-          processamento é todo local (CPU).
+          Nota: O processamento é todo local (CPU). Textos longos serão
+          segmentados automaticamente.
         </p>
       </div>
     </main>
