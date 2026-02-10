@@ -1,6 +1,6 @@
 export class AudioManager {
   private audioContext: AudioContext | null = null;
-  private nextStartTime: number = 0;
+  private activeSource: AudioBufferSourceNode | null = null;
 
   constructor() {
     if (typeof window !== "undefined") {
@@ -23,26 +23,34 @@ export class AudioManager {
   }
 
   public reset() {
-    this.nextStartTime = 0;
-    // We don't close the context, just reset the scheduling time.
-    // However, if we want to stop currently playing audio, we might need to suspend or close.
-    // For simplicity in this app, we can close and recreate if needed, but keeping it simple for now.
-    if (this.audioContext) {
-        // Simple way to stop: suspend (but that pauses) or close. 
-        // Let's just reset the time reference. Actual stop happens by not scheduling more chunks.
-        // For immediate stop, we'd need to track source nodes.
+    this.stop();
+  }
+
+  public stop() {
+    if (this.activeSource) {
+      try {
+        this.activeSource.stop();
+        this.activeSource.disconnect();
+      } catch (e) {
+        // Ignore errors if already stopped
+      }
+      this.activeSource = null;
     }
   }
 
-  public async stop() {
-      if (this.audioContext) {
-          await this.audioContext.close();
-          this.audioContext = null; // Force recreation on next use
-          this.nextStartTime = 0;
+  public setPlaybackRate(rate: number) {
+      if (this.activeSource) {
+          this.activeSource.playbackRate.value = rate;
       }
   }
 
-  public scheduleChunk(samples: Float32Array, sampleRate: number) {
+  /**
+   * Plays a specific audio buffer immediately.
+   * @param buffer The AudioBuffer to play.
+   * @param onEnded Callback when playback finishes.
+   * @returns The created AudioBufferSourceNode.
+   */
+  public playBuffer(buffer: AudioBuffer, onEnded?: () => void) {
     if (!this.audioContext) {
          const AudioContextClass =
         window.AudioContext ||
@@ -51,26 +59,40 @@ export class AudioManager {
       this.audioContext = new AudioContextClass();
     }
 
-    const ctx = this.audioContext;
-    const buffer = ctx.createBuffer(1, samples.length, sampleRate);
-    // Fix: Create a new Float32Array to ensure it's treated as a standard ArrayBuffer-backed array
-    // This resolves the mismatch between ArrayBufferLike (which includes SharedArrayBuffer) and ArrayBuffer
-    const standardSamples = new Float32Array(samples);
-    buffer.copyToChannel(standardSamples, 0);
+    // Stop any currently playing audio before starting new one (if strictly sequential)
+    // For this app, we want to replace the current chunk if the user skips, so stopping is good.
+    this.stop();
 
+    const ctx = this.audioContext;
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
 
-    // Schedule
-    const currentTime = ctx.currentTime;
-    // If nextStartTime is in the past, reset it to current + small buffer
-    const startTime = Math.max(currentTime, this.nextStartTime);
-    
-    source.start(startTime);
+    source.onended = () => {
+        if (this.activeSource === source) {
+            this.activeSource = null;
+        }
+        if (onEnded) onEnded();
+    };
 
-    this.nextStartTime = startTime + buffer.duration;
+    source.start(0);
+    this.activeSource = source;
     
     return source;
+  }
+
+  public createBuffer(samples: Float32Array, sampleRate: number): AudioBuffer {
+     if (!this.audioContext) {
+         const AudioContextClass =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext })
+          .webkitAudioContext;
+      this.audioContext = new AudioContextClass();
+    }
+    const ctx = this.audioContext;
+    const buffer = ctx.createBuffer(1, samples.length, sampleRate);
+    const standardSamples = new Float32Array(samples);
+    buffer.copyToChannel(standardSamples, 0);
+    return buffer;
   }
 }
