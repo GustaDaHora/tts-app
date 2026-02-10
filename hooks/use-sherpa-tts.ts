@@ -36,6 +36,10 @@ export function useSherpaTTS() {
     const Module = (window as any).Module;
 
     const _malloc = Module._malloc;
+    if (typeof _malloc !== 'function') {
+        console.error("Module._malloc is not a function", Module);
+        throw new Error("WASM Initialization Error: _malloc is missing");
+    }
     const _free = Module._free;
     const stringToUTF8 = Module.stringToUTF8;
     const lengthBytesUTF8 = Module.lengthBytesUTF8;
@@ -132,21 +136,53 @@ export function useSherpaTTS() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const win = window as any;
 
-    if (!win.Module || !win.Module._SherpaOnnxCreateOfflineTts) {
-       // Symbols not yet ready
+    if (!win.Module) {
+        return;
+    }
+
+    console.log("Checking Module status...");
+    if (win.Module.FS) {
+         try {
+             console.log("FS Root files:", win.Module.FS.readdir("/"));
+             console.log("FS espeak-ng-data:", win.Module.FS.readdir("/espeak-ng-data"));
+         } catch(e) {
+             console.log("FS check error:", e);
+         }
+    } else {
+        console.log("Module.FS not available yet");
+    }
+
+    if (!win.Module._SherpaOnnxCreateOfflineTts) {
+       console.log("C-API symbols (SherpaOnnxCreateOfflineTts) missing.");
        return;
     }
+
+    console.log("All symbols ready. Initializing...");
 
     initializedRef.current = true;
     
     try {
         setStatus("Inicializando motor TTS...");
         
-        // Use generic filenames as they are in public/ folder
+        // Correct filename from WASM data package analysis
+        const modelPath = "/pt_BR-jeff-medium.onnx";
+        const tokensPath = "/tokens.txt";
+
+        // Verify files exist in MEMFS before attempting initialization
+        if (win.Module.FS) {
+            const modelExists = win.Module.FS.analyzePath(modelPath).exists;
+            const tokensExists = win.Module.FS.analyzePath(tokensPath).exists;
+            console.log(`FS Check: Model exists? ${modelExists}, Tokens exist? ${tokensExists}`);
+            
+            if (!modelExists) {
+                throw new Error(`Model file not found in WASM FS: ${modelPath}`);
+            }
+        }
+
         const config: SherpaConfig = {
             vits: {
-                model: "model.onnx", // CHANGED from pt_BR-jeff-medium.onnx
-                tokens: "tokens.txt",
+                model: modelPath, 
+                tokens: tokensPath,
                 lengthScale: 1.0,
                 noiseScale: 0.667,
                 noiseScaleW: 0.8,
@@ -157,12 +193,19 @@ export function useSherpaTTS() {
         };
         
         ttsRef.current = createOfflineTts(config);
+        
+        // Additional check for the handle
+        if ((ttsRef.current as any) === 0) {
+             throw new Error("SherpaOnnx creation returned 0 handle (Initialization failed).");
+        }
+
         setStatus("Pronto! Modelo carregado.");
         setIsReady(true);
     } catch (e) {
         console.error(e);
-        setStatus("Erro: " + e);
-        initializedRef.current = false; // Retry?
+        const err = e as Error;
+        setStatus("Erro: " + err.message);
+        initializedRef.current = false; // Allow retry
     }
 
   }, [createOfflineTts]);
