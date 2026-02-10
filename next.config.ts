@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   /* config options here */
-  output: "export",
+  // output: "export", // Removed to allow headers in dev mode and Vercel handling
   // basePath removed for Vercel deployment
   images: {
     unoptimized: true,
