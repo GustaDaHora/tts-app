@@ -32,7 +32,7 @@ declare global {
 
 export default function Home() {
   const [text, setText] = useState<string>(
-    "Olá! Este é um teste da Sherpa ONNX rodando localmente no seu navegador. (Versão GitHub Pages)"
+    "Olá! Este é um teste da Sherpa ONNX rodando localmente no seu navegador. O processamento de textos longos agora é feito em pedaços para reduzir a latência e começar a falar mais rápido.",
   );
 
   // No prefix needed for Vercel/Root deployment
@@ -40,6 +40,10 @@ export default function Home() {
   const [status, setStatus] = useState<string>("Aguardando carregamento...");
   const [isReady, setIsReady] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+
+  // Progress tracking
+  const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
+  const [totalChunks, setTotalChunks] = useState(0);
 
   // Hydration check using ref to avoid SSR/client mismatch
   const [mounted, setMounted] = useState(() => {
@@ -51,9 +55,33 @@ export default function Home() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const ttsRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const nextStartTimeRef = useRef<number>(0);
+  const isCancelledRef = useRef<boolean>(false);
 
   // Use a ref to track if we've already initialized to strictly prevent double-init
   const initializedRef = useRef(false);
+
+  // --- Helper: Text Segmentation ---
+  const splitTextIntoChunks = (text: string, maxChunkSize = 200): string[] => {
+    // Split by sentence terminators, keeping the terminator
+    // This regex looks for punctuation followed by space or end of string
+    const sentences = text.match(/[^.!?;\n]+[.!?;\n]*/g) || [text];
+
+    const chunks: string[] = [];
+    let currentChunk = "";
+
+    for (const sentence of sentences) {
+      if (currentChunk.length + sentence.length > maxChunkSize) {
+        if (currentChunk.trim()) chunks.push(currentChunk.trim());
+        currentChunk = sentence;
+      } else {
+        currentChunk += sentence;
+      }
+    }
+    if (currentChunk.trim()) chunks.push(currentChunk.trim());
+
+    return chunks;
+  };
 
   // --- Wrapper Manual para Sherpa ONNX (Ponte para o C-API) ---
   const createOfflineTts = (configObj: SherpaConfig) => {
@@ -81,22 +109,6 @@ export default function Home() {
     const configPtr = _malloc(configSize);
     Module.HEAPU8.fill(0, configPtr, configPtr + configSize); // Zerar memória
 
-    // Offset map based on c-api.h:
-    // VitsConfig at offset 0
-    // - model: 0
-    // - lexicon: 4
-    // - tokens: 8
-    // - data_dir: 12
-    // - noise_scale: 16 (float)
-    // - noise_scale_w: 20 (float)
-    // - length_scale: 24 (float)
-    // - dict_dir: 28
-
-    // ModelConfig continues
-    // - num_threads: 32 (int)
-    // - debug: 36 (int)
-    // - provider: 40 (string)
-
     const vits = configObj.vits;
 
     // Escreve VITS Config
@@ -119,12 +131,12 @@ export default function Home() {
     const handle = Module._SherpaOnnxCreateOfflineTts(configPtr);
     console.log("TTS Handle created:", handle);
 
-    // Limpeza da config (Poderiamos limpar as strings alocadas também, mas para simplify deixamos vazar esses poucos bytes na init única)
+    // Limpeza da config
     _free(configPtr);
 
     if (handle === 0) {
       throw new Error(
-        "Failed to create SherpaOnnx OfflineTts instance (Handle is 0)"
+        "Failed to create SherpaOnnx OfflineTts instance (Handle is 0)",
       );
     }
 
@@ -132,14 +144,12 @@ export default function Home() {
       handle: handle,
       generate: (params: { text: string; sid: number; speed: number }) => {
         const textPtr = allocString(params.text);
-        const start = performance.now();
-
         // Chama C function: Generate
         const audioResPtr = Module._SherpaOnnxOfflineTtsGenerate(
           handle,
           textPtr,
           params.sid || 0,
-          params.speed || 1.0
+          params.speed || 1.0,
         );
 
         _free(textPtr); // Libera string do texto
@@ -149,28 +159,18 @@ export default function Home() {
         }
 
         // Lê resultado da struct SherpaOnnxGeneratedAudio
-        // - samples: 0 (float*)
-        // - n: 4 (int)
-        // - sample_rate: 8 (int)
         const samplesPtr = getValue(audioResPtr + 0, "i32");
         const n = getValue(audioResPtr + 4, "i32");
         const sampleRate = getValue(audioResPtr + 8, "i32");
 
-        console.log(
-          `Generated ${n} samples at ${sampleRate}Hz in ${
-            performance.now() - start
-          }ms`
-        );
-
         // Copia samples do Heap para JS Float32Array
-        // HEAPF32 é uma view, precisamos calcular o offset em floats (bytes / 4)
         if (!Module.HEAPF32 || !Module.HEAPF32.buffer) {
           throw new Error("WASM memory (HEAPF32) not initialized");
         }
         const samples = new Float32Array(
           Module.HEAPF32.buffer,
           samplesPtr,
-          n
+          n,
         ).slice(0); // slice faz uma cópia segura
 
         // Libera o resultado de áudio do C
@@ -209,8 +209,6 @@ export default function Home() {
     }
 
     try {
-      // As of the custom WASM build, models are embedded in the .data file.
-      // We no longer need to fetch them manually.
       setStatus("Inicializando motor TTS (Native Wrapper)...");
 
       const config = {
@@ -261,30 +259,7 @@ export default function Home() {
     return () => clearInterval(intervalId);
   }, [mounted, initSherpa]);
 
-  const handleSpeak = () => {
-    if (!ttsRef.current || !text) return;
-
-    setIsSpeaking(true);
-
-    // Pequeno delay para a UI atualizar antes do processamento pesado travar a thread
-    setTimeout(() => {
-      try {
-        // Gera o áudio (retorna um objeto com samples e sampleRate)
-        const audioData = ttsRef.current.generate({
-          text: text,
-          sid: 0, // Speaker ID (0 para single speaker)
-          speed: 1.0,
-        });
-
-        playAudio(audioData.samples, audioData.sampleRate);
-      } catch (error) {
-        console.error("Speak error:", error);
-        setIsSpeaking(false);
-      }
-    }, 50);
-  };
-
-  const playAudio = (samples: Float32Array, sampleRate: number) => {
+  const scheduleAudio = (samples: Float32Array, sampleRate: number) => {
     if (!audioContextRef.current) {
       const AudioContextClass =
         window.AudioContext ||
@@ -294,18 +269,102 @@ export default function Home() {
     }
 
     const ctx = audioContextRef.current;
+
+    // Ensure context is running (sometimes needed after user interaction)
+    if (ctx.state === "suspended") {
+      ctx.resume();
+    }
+
     const buffer = ctx.createBuffer(1, samples.length, sampleRate);
 
     // Fix TypeScript error by ensuring the type matches exactly what copyToChannel expects
-    // Creating a new Float32Array from the existing one usually solves the ArrayBufferLike mismatch
     buffer.copyToChannel(new Float32Array(samples), 0);
 
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
 
-    source.onended = () => setIsSpeaking(false);
-    source.start(0);
+    // Calculate start time:
+    // If nextStartTime is in the past (e.g. first chunk or after a pause), start immediately (currentTime + small offset)
+    // Otherwise, schedule for nextStartTime.
+    const startTime = Math.max(ctx.currentTime, nextStartTimeRef.current);
+    source.start(startTime);
+
+    // Update next start time
+    nextStartTimeRef.current = startTime + buffer.duration;
+
+    // We can add onended to the source to detect when *this specific chunk* finishes,
+    // but detecting when *all* audio finishes is trickier with this streaming approach.
+    // For now, we rely on the generation loop to finish.
+    return source;
+  };
+
+  const handleSpeak = async () => {
+    if (!ttsRef.current || !text) return;
+    if (isSpeaking) {
+      // If already speaking, treat this click as a Cancel/Stop
+      isCancelledRef.current = true;
+      if (audioContextRef.current) {
+        audioContextRef.current.close().then(() => {
+          audioContextRef.current = null;
+        });
+      }
+      setIsSpeaking(false);
+      return;
+    }
+
+    setIsSpeaking(true);
+    isCancelledRef.current = false;
+
+    // Reset audio context scheduling time
+    if (audioContextRef.current) {
+      // It's safer to close/re-open or just rely on currentTime logic.
+      // Let's reset the ref counter.
+      nextStartTimeRef.current = 0;
+    }
+
+    const chunks = splitTextIntoChunks(text);
+    setTotalChunks(chunks.length);
+    setCurrentChunkIndex(0);
+
+    // Initial small delay to let UI update
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    try {
+      for (let i = 0; i < chunks.length; i++) {
+        if (isCancelledRef.current) break;
+
+        const chunk = chunks[i];
+        setCurrentChunkIndex(i + 1);
+
+        // Generate audio for this chunk
+        // This is a blocking operation on the main thread (WASM), but since chunks are smaller, it shouldn't freeze UI for too long.
+        // We can wrap in another setTimeout to yield to main thread if needed
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        const audioData = ttsRef.current.generate({
+          text: chunk,
+          sid: 0,
+          speed: 1.0,
+        });
+
+        if (isCancelledRef.current) break;
+
+        // Schedule playback
+        scheduleAudio(audioData.samples, audioData.sampleRate);
+      }
+    } catch (error) {
+      console.error("Speak error:", error);
+    } finally {
+      // We only set isSpeaking to false after we've *processed* all chunks.
+      // Ideally we'd wait for playback to finish too, but that requires tracking all sources.
+      // For 'Streaming' UX, the button usually turns back to 'Speak' when generation is done,
+      // even if audio is still playing from the buffer.
+      setIsSpeaking(false);
+      if (isCancelledRef.current) {
+        console.log("Playback cancelled via user interaction.");
+      }
+    }
   };
 
   // Prevent hydration mismatch by only rendering content after mount
@@ -319,8 +378,6 @@ export default function Home() {
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-6 bg-gray-950 text-white">
-      {/* Module Init moved to layout.tsx */}
-
       {/* Simplest script loading strategy */}
       <Script
         src={`${prefix}/sherpa-onnx-wasm-main-tts.js`}
@@ -349,21 +406,27 @@ export default function Home() {
 
         <button
           onClick={handleSpeak}
-          disabled={!isReady || isSpeaking}
+          disabled={!isReady}
           className={`w-full py-4 px-6 rounded-lg font-bold transition-all text-lg ${
             !isReady
               ? "bg-gray-600 cursor-not-allowed"
               : isSpeaking
-              ? "bg-green-700 cursor-wait"
-              : "bg-green-600 hover:bg-green-500 hover:scale-105 shadow-lg shadow-green-500/20"
+                ? "bg-red-600 hover:bg-red-500 hover:scale-105 shadow-lg shadow-red-500/20"
+                : "bg-green-600 hover:bg-green-500 hover:scale-105 shadow-lg shadow-green-500/20"
           } ${!isReady ? "text-gray-400" : "text-white"}`}
         >
-          {isSpeaking ? "Gerando e Falando..." : "Gerar Áudio Neural"}
+          {isSpeaking ? (
+            <span>
+              Parar / Cancelar ({currentChunkIndex}/{totalChunks})
+            </span>
+          ) : (
+            "Gerar Áudio (Streaming)"
+          )}
         </button>
 
         <p className="mt-4 text-xs text-center text-gray-500">
-          Nota: A primeira vez que você clica, pode haver um leve atraso. O
-          processamento é todo local (CPU).
+          Nota: O texto é dividido em segmentos para reprodução rápida. O áudio
+          continua tocando enquanto o próximo trecho é gerado.
         </p>
       </div>
     </main>
