@@ -56,6 +56,7 @@ export default function RootLayout({
               // Track module initialization
               window.Module.onRuntimeInitialized = function() {
                 console.log("WASM Runtime Initialized Successfully!");
+                window.Module.isReady = true;
               };
             }
           `}
