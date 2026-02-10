@@ -55,6 +55,10 @@ export function useSherpaTTS() {
   // --- Wrapper Manual for Sherpa ONNX ---
   const createOfflineTts = (configObj: SherpaConfig) => {
     const Module = window.Module;
+    if (!Module || !Module._malloc) {
+        throw new Error("Module not initialized or _malloc missing");
+    }
+
     const _malloc = Module._malloc;
     const _free = Module._free;
     const stringToUTF8 = Module.stringToUTF8;
@@ -144,17 +148,19 @@ export function useSherpaTTS() {
   const initSherpa = useCallback(async () => {
     if (initializedRef.current) return;
 
-    if (!window.Module || !window.Module._SherpaOnnxCreateOfflineTts) {
+    // Strict check for required C-API symbols
+    if (!window.Module || !window.Module._SherpaOnnxCreateOfflineTts || !window.Module._malloc) {
       return;
+    }
+    
+    // Double check FS
+    const fs = window.Module.FS || (window as any).FS;
+    if (!fs) {
+       console.log("FS not ready yet");
+       return; 
     }
 
     initializedRef.current = true;
-    const fs = window.Module.FS || (window as any).FS;
-
-    if (!fs) {
-      setStatus("Erro crítico: FS não encontrado.");
-      return;
-    }
 
     try {
       setStatus("Inicializando motor TTS...");
@@ -193,7 +199,9 @@ export function useSherpaTTS() {
         return;
       }
 
-      if (window.Module && window.Module._SherpaOnnxCreateOfflineTts) {
+      // We wait until both the Module exists AND the specific C function we need is exported
+      // This ensures WASM is compiled and Runtime initialized
+      if (window.Module && window.Module._SherpaOnnxCreateOfflineTts && window.Module._malloc) {
         initSherpa();
         clearInterval(intervalId);
       }
